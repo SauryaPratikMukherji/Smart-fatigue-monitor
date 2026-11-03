@@ -1,0 +1,19 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary & session output files
+reports/*.csv
+!reports/.gitkeep
+temp_uploaded_video.*
+
+# OS specific files
+Thumbs.db
+Desktop.ini
+.DS_Store
