@@ -8,7 +8,9 @@ from src.config import (
     DEFAULT_EAR_THRESHOLD,
     DEFAULT_EAR_FRAMES_DROWSY,
     DEFAULT_MAR_THRESHOLD,
-    DEFAULT_MAR_FRAMES_YAWN
+    DEFAULT_MAR_FRAMES_YAWN,
+    HEAD_PITCH_DOWN_THRESHOLD,
+    DEFAULT_SLEEP_TIMEOUT_SECONDS
 )
 from src.face_mesh_detector import FaceMeshDetector
 from src.fatigue_metrics import (
@@ -16,7 +18,8 @@ from src.fatigue_metrics import (
     calculate_mar,
     estimate_head_pose,
     BlinkTracker,
-    YawnTracker
+    YawnTracker,
+    SleepTracker
 )
 from src.attention_scorer import AttentionScorer
 from src.neural_classifier import AttentionNeuralClassifier
@@ -37,6 +40,7 @@ def run_desktop_app(camera_index: int = 0):
     detector = FaceMeshDetector()
     blink_tracker = BlinkTracker()
     yawn_tracker = YawnTracker()
+    sleep_tracker = SleepTracker(timeout_seconds=DEFAULT_SLEEP_TIMEOUT_SECONDS)
     scorer = AttentionScorer()
     classifier = AttentionNeuralClassifier()
     recommender = BreakRecommender()
@@ -60,6 +64,7 @@ def run_desktop_app(camera_index: int = 0):
 
     print("\n[READY] FocusGuard running.")
     print("Controls:")
+    print("  's' or SPACE -> Stop ringing sleep alarm")
     print("  'q' -> Exit and view summary")
     print("  'r' -> Reset counters")
     print("  'm' -> Toggle audio alert\n")
@@ -100,6 +105,23 @@ def run_desktop_app(camera_index: int = 0):
                 is_blink, is_drowsy, total_blinks, bpm = blink_tracker.update(ear_avg)
                 is_yawn, total_yawns = yawn_tracker.update(mar)
 
+                # check sleep conditions (eyes closed or head down)
+                effective_thresh = max(0.16, min(DEFAULT_EAR_THRESHOLD, blink_tracker.open_eye_baseline * 0.72))
+                is_eyes_closed = (ear_avg < effective_thresh)
+                is_head_down = (pitch < -HEAD_PITCH_DOWN_THRESHOLD)
+
+                sleep_alarm, sleep_reason, closed_dur, head_dur = sleep_tracker.update(
+                    is_eyes_closed=is_eyes_closed,
+                    is_head_down=is_head_down,
+                    current_time=now
+                )
+
+                # start continuous loud alarm on sleep or play brief microsleep warning
+                if sleep_alarm:
+                    alert_mgr.start_sleep_alarm()
+                elif is_drowsy:
+                    alert_mgr.trigger_alert("drowsy")
+
                 # neural network prediction
                 closure_ratio = blink_tracker.closed_frame_count / float(DEFAULT_EAR_FRAMES_DROWSY)
                 yawn_ratio = yawn_tracker.open_mouth_frames / float(DEFAULT_MAR_FRAMES_YAWN)
@@ -123,15 +145,19 @@ def run_desktop_app(camera_index: int = 0):
                     neural_state=neural_state
                 )
 
-                # trigger beep if drowsy
-                if is_drowsy:
-                    alert_mgr.trigger_alert("drowsy")
-
                 # draw annotations and hud
                 display_frame = detector.draw_annotations(
                     frame, extracted, pitch, yaw, roll, nose_proj,
                     final_state, ear_avg, mar, attention_score
                 )
+
+                # overlay sleep alarm banner if ringing
+                if alert_mgr.is_sleep_alarm_active():
+                    cv2.rectangle(display_frame, (0, 0), (img_w, 60), (0, 0, 220), -1)
+                    cv2.putText(
+                        display_frame, f"SLEEP ALARM! WAKE UP! (PRESS 'S' TO STOP)",
+                        (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA
+                    )
 
                 # record entry
                 logger.log_entry(
@@ -141,6 +167,15 @@ def run_desktop_app(camera_index: int = 0):
 
             else:
                 # no face in frame
+                was_head_down = (sleep_tracker.head_down_start is not None)
+                sleep_alarm, sleep_reason, closed_dur, head_dur = sleep_tracker.update(
+                    is_eyes_closed=False,
+                    is_head_down=was_head_down,
+                    current_time=now
+                )
+                if sleep_alarm:
+                    alert_mgr.start_sleep_alarm()
+
                 attention_score, final_state = scorer.update(
                     has_face=False,
                     ear_avg=0.0,
@@ -157,6 +192,12 @@ def run_desktop_app(camera_index: int = 0):
                     display_frame, "NO FACE DETECTED - PLEASE FACE CAMERA",
                     (30, int(img_h / 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2
                 )
+                if alert_mgr.is_sleep_alarm_active():
+                    cv2.rectangle(display_frame, (0, 0), (img_w, 60), (0, 0, 220), -1)
+                    cv2.putText(
+                        display_frame, "SLEEP ALARM! WAKE UP! (PRESS 'S' TO STOP)",
+                        (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA
+                    )
 
             # draw bottom status bar
             summary = scorer.get_summary()
@@ -172,10 +213,16 @@ def run_desktop_app(camera_index: int = 0):
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
+            elif key == ord('s') or key == ord(' '):
+                alert_mgr.stop_sleep_alarm()
+                sleep_tracker.dismiss()
+                print("[ALARM] Sleep alarm manually stopped.")
             elif key == ord('r'):
                 scorer.reset()
                 blink_tracker.reset()
                 yawn_tracker.reset()
+                sleep_tracker.reset()
+                alert_mgr.stop_sleep_alarm()
                 logger.clear()
                 print("[INFO] Session reset.")
             elif key == ord('m'):
@@ -184,6 +231,7 @@ def run_desktop_app(camera_index: int = 0):
                 print(f"[INFO] Audio Alarm: {status_str}")
 
     finally:
+        alert_mgr.stop_sleep_alarm()
         cap.release()
         cv2.destroyAllWindows()
         detector.close()

@@ -33,17 +33,20 @@ MODEL_3D_POINTS = [
 ]
 
 # thresholds
-DEFAULT_EAR_THRESHOLD = 0.24          # eye closure threshold
+DEFAULT_EAR_THRESHOLD = 0.22          # calibrated eye closure threshold
 DEFAULT_EAR_FRAMES_DROWSY = 25        # frames closed to count as drowsy
-DEFAULT_EAR_FRAMES_BLINK = 1          # frames to count as blink
+DEFAULT_EAR_FRAMES_BLINK = 2          # minimum consecutive frames for blink
 
 DEFAULT_MAR_THRESHOLD = 0.58          # mouth open threshold
 DEFAULT_MAR_FRAMES_YAWN = 25          # frames open to count as yawn
 
 # head pose angles in degrees
 HEAD_YAW_THRESHOLD = 25.0             # looking left or right
-HEAD_PITCH_DOWN_THRESHOLD = 20.0      # looking down
+HEAD_PITCH_DOWN_THRESHOLD = 18.0      # looking down threshold
 HEAD_PITCH_UP_THRESHOLD = 22.0        # looking up
+
+# sleep detection settings
+DEFAULT_SLEEP_TIMEOUT_SECONDS = 120   # 2 minutes continuous closure/head down triggers alarm
 
 # rolling window settings
 BLINK_WINDOW_SECONDS = 60             # calculate blinks per minute over 60s

@@ -11,7 +11,9 @@ from src.config import (
     DEFAULT_EAR_THRESHOLD,
     DEFAULT_EAR_FRAMES_DROWSY,
     DEFAULT_MAR_THRESHOLD,
-    DEFAULT_MAR_FRAMES_YAWN
+    DEFAULT_MAR_FRAMES_YAWN,
+    HEAD_PITCH_DOWN_THRESHOLD,
+    DEFAULT_SLEEP_TIMEOUT_SECONDS
 )
 from src.face_mesh_detector import FaceMeshDetector
 from src.fatigue_metrics import (
@@ -19,7 +21,8 @@ from src.fatigue_metrics import (
     calculate_mar,
     estimate_head_pose,
     BlinkTracker,
-    YawnTracker
+    YawnTracker,
+    SleepTracker
 )
 from src.attention_scorer import AttentionScorer
 from src.neural_classifier import AttentionNeuralClassifier
@@ -347,17 +350,19 @@ def get_personalized_suggestions(summary, total_blinks, avg_bpm, total_yawns, dr
 def init_session_state():
     if 'detector' not in st.session_state:
         st.session_state.detector = FaceMeshDetector()
-    if 'blink_tracker' not in st.session_state or not hasattr(st.session_state.blink_tracker, 'open_eye_baseline'):
+    if 'blink_tracker' not in st.session_state or not hasattr(st.session_state.blink_tracker, '_warmup_frames'):
         st.session_state.blink_tracker = BlinkTracker()
     if 'yawn_tracker' not in st.session_state:
         st.session_state.yawn_tracker = YawnTracker()
+    if 'sleep_tracker' not in st.session_state:
+        st.session_state.sleep_tracker = SleepTracker(timeout_seconds=DEFAULT_SLEEP_TIMEOUT_SECONDS)
     if 'scorer' not in st.session_state:
         st.session_state.scorer = AttentionScorer()
     if 'classifier' not in st.session_state:
         st.session_state.classifier = AttentionNeuralClassifier()
     if 'recommender' not in st.session_state or not hasattr(st.session_state.recommender, 'generate_session_suggestions'):
         st.session_state.recommender = BreakRecommender()
-    if 'alert_manager' not in st.session_state:
+    if 'alert_manager' not in st.session_state or not hasattr(st.session_state.alert_manager, 'start_sleep_alarm'):
         st.session_state.alert_manager = AlertManager(enabled=True)
     if 'logger' not in st.session_state:
         st.session_state.logger = SessionLogger()
@@ -395,17 +400,28 @@ else:
     uploaded_video_file = st.sidebar.file_uploader("Upload Video (mp4, avi)", type=["mp4", "avi", "mov"])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Sensitivity Tuning")
-ear_threshold = st.sidebar.slider("Eye Closure Threshold (EAR)", min_value=0.15, max_value=0.32, value=DEFAULT_EAR_THRESHOLD, step=0.01)
+st.sidebar.subheader("Sensitivity & Alarms")
+ear_threshold = st.sidebar.slider("Eye Closure Threshold (EAR)", min_value=0.15, max_value=0.30, value=DEFAULT_EAR_THRESHOLD, step=0.01)
 mar_threshold = st.sidebar.slider("Yawn Threshold (MAR)", min_value=0.40, max_value=0.80, value=DEFAULT_MAR_THRESHOLD, step=0.02)
 drowsy_frames = st.sidebar.slider("Drowsiness Trigger Frames", min_value=15, max_value=50, value=DEFAULT_EAR_FRAMES_DROWSY, step=1)
+
+# sleep alarm timeout setting
+sleep_timeout = st.sidebar.slider(
+    "Sleep Alarm Trigger Time (Seconds)",
+    min_value=5,
+    max_value=180,
+    value=int(DEFAULT_SLEEP_TIMEOUT_SECONDS),
+    step=5
+)
+st.sidebar.caption("Triggers continuous loud alarm if eyes are closed or head is down continuously. Default: 120s (2 min). Set to 5s-10s to test immediately.")
 
 # update tracker thresholds
 st.session_state.blink_tracker.ear_threshold = ear_threshold
 st.session_state.blink_tracker.drowsy_frames = drowsy_frames
 st.session_state.yawn_tracker.mar_threshold = mar_threshold
+st.session_state.sleep_tracker.timeout_seconds = sleep_timeout
 
-enable_audio = st.sidebar.checkbox("🔊 Audio Alarm on Microsleep", value=True)
+enable_audio = st.sidebar.checkbox("🔊 Audio Alerts & Sleep Alarm", value=True)
 st.session_state.alert_manager.set_enabled(enable_audio)
 
 st.sidebar.markdown("---")
@@ -413,6 +429,8 @@ if st.sidebar.button("🔄 Reset Study Session"):
     st.session_state.scorer.reset()
     st.session_state.blink_tracker.reset()
     st.session_state.yawn_tracker.reset()
+    st.session_state.sleep_tracker.reset()
+    st.session_state.alert_manager.stop_sleep_alarm()
     st.session_state.logger.clear()
     st.sidebar.success("Session reset.")
 
@@ -422,6 +440,23 @@ st.markdown(
     '<div class="sub-header">Student Attention and Fatigue Monitoring System</div>',
     unsafe_allow_html=True
 )
+
+# sleep alarm banner and manual stop button
+alarm_banner_slot = st.empty()
+if st.session_state.sleep_tracker.alarm_triggered or st.session_state.alert_manager.is_sleep_alarm_active():
+    with alarm_banner_slot.container():
+        st.markdown(f"""
+        <div style="background-color: #FEF2F2; border: 3px solid #DC2626; border-radius: 12px; padding: 18px 24px; text-align: center; margin-bottom: 14px; box-shadow: 0 4px 14px rgba(220, 38, 38, 0.25);">
+            <h2 style="color: #991B1B; margin: 0 0 6px 0; font-size: 1.8rem;">🚨 SLEEP ALARM ACTIVE — WAKE UP!</h2>
+            <p style="color: #7F1D1D; font-size: 1.05rem; margin: 0 0 12px 0; font-weight: 600;">
+                {st.session_state.sleep_tracker.trigger_reason} detected! Alarm will NOT stop until you manually stop it below.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("🔕 STOP ALARM / I'M AWAKE", type="primary", use_container_width=True, key="stop_alarm_main"):
+            st.session_state.alert_manager.stop_sleep_alarm()
+            st.session_state.sleep_tracker.dismiss()
+            st.rerun()
 
 # control buttons
 col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 2])
@@ -434,6 +469,7 @@ if start_clicked:
     st.session_state.is_running = True
 if stop_clicked:
     st.session_state.is_running = False
+    st.session_state.alert_manager.stop_sleep_alarm()
 
 # main layout columns
 col_video, col_telemetry = st.columns([1.3, 1.0])
@@ -464,7 +500,7 @@ with col_telemetry:
     st.markdown("#### 📈 Attention Trend")
     chart_placeholder = st.empty()
 
-    st.markdown("#### 💡 Smart Break Advisor")
+    st.markdown("#### 💡 Smart Break & Sleep Advisor")
     break_advisor_placeholder = st.empty()
 
 # video processing loop
@@ -503,6 +539,7 @@ if st.session_state.is_running:
             break
 
         img_h, img_w = frame.shape[:2]
+        now = time.time()
 
         # detect facial landmarks
         extracted = st.session_state.detector.process_frame(frame)
@@ -519,9 +556,26 @@ if st.session_state.is_running:
                 extracted['landmarks_pixel'], img_w, img_h
             )
 
-            # update trackers
+            # update blink and yawn trackers
             is_blink, is_prolonged_closure, total_blinks, bpm = st.session_state.blink_tracker.update(ear_avg)
             is_yawn, total_yawns = st.session_state.yawn_tracker.update(mar)
+
+            # check sleep conditions (eyes closed or head down)
+            effective_thresh = max(0.16, min(ear_threshold, st.session_state.blink_tracker.open_eye_baseline * 0.72))
+            is_eyes_closed = (ear_avg < effective_thresh)
+            is_head_down = (pitch < -HEAD_PITCH_DOWN_THRESHOLD)
+
+            sleep_alarm, sleep_reason, closed_dur, head_dur = st.session_state.sleep_tracker.update(
+                is_eyes_closed=is_eyes_closed,
+                is_head_down=is_head_down,
+                current_time=now
+            )
+
+            # trigger sleep alarm or normal microsleep alert
+            if sleep_alarm:
+                st.session_state.alert_manager.start_sleep_alarm()
+            elif is_prolonged_closure:
+                st.session_state.alert_manager.trigger_alert("drowsy")
 
             # neural classification
             closure_ratio = st.session_state.blink_tracker.closed_frame_count / float(drowsy_frames)
@@ -546,24 +600,38 @@ if st.session_state.is_running:
                 neural_state=neural_state
             )
 
-            # sound alert on microsleep
-            if is_prolonged_closure:
-                st.session_state.alert_manager.trigger_alert("drowsy")
-
             # draw annotations
             annotated_frame = st.session_state.detector.draw_annotations(
                 frame, extracted, pitch, yaw, roll, nose_proj,
                 final_state, ear_avg, mar, attention_score
             )
 
+            # overlay sleep alarm banner on video if ringing
+            if st.session_state.alert_manager.is_sleep_alarm_active():
+                cv2.rectangle(annotated_frame, (0, 0), (img_w, 60), (0, 0, 220), -1)
+                cv2.putText(
+                    annotated_frame, f"SLEEP ALARM! WAKE UP! ({sleep_reason})",
+                    (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA
+                )
+
             # log entry
             st.session_state.logger.log_entry(
-                time.time() - st.session_state.scorer.start_time,
+                now - st.session_state.scorer.start_time,
                 ear_avg, mar, yaw, pitch, bpm, attention_score, final_state
             )
 
         else:
             # no face detected
+            # if head was already tilting down when face was lost, continue tracking head down
+            was_head_down = (st.session_state.sleep_tracker.head_down_start is not None)
+            sleep_alarm, sleep_reason, closed_dur, head_dur = st.session_state.sleep_tracker.update(
+                is_eyes_closed=False,
+                is_head_down=was_head_down,
+                current_time=now
+            )
+            if sleep_alarm:
+                st.session_state.alert_manager.start_sleep_alarm()
+
             attention_score, final_state = st.session_state.scorer.update(
                 has_face=False,
                 ear_avg=0.0,
@@ -580,6 +648,13 @@ if st.session_state.is_running:
                 annotated_frame, "NO FACE DETECTED - PLEASE FACE CAMERA",
                 (30, int(img_h / 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2
             )
+            if st.session_state.alert_manager.is_sleep_alarm_active():
+                cv2.rectangle(annotated_frame, (0, 0), (img_w, 60), (0, 0, 220), -1)
+                cv2.putText(
+                    annotated_frame, "SLEEP ALARM ACTIVE! HEAD DOWN DETECTED!",
+                    (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA
+                )
+
             ear_avg = 0.0
             mar = 0.0
             bpm = 0.0
@@ -648,30 +723,44 @@ if st.session_state.is_running:
             }).set_index('Time (s)')
             chart_placeholder.line_chart(recent_df, height=180)
 
-        # break recommendations during session
-        break_rec = st.session_state.recommender.evaluate(
-            session_duration_sec=summary['session_duration_sec'],
-            total_yawns=total_yawns,
-            drowsy_episodes=st.session_state.blink_tracker.drowsy_episode_count,
-            low_attention_streak_sec=st.session_state.scorer.low_attention_streak_seconds,
-            current_attention=attention_score,
-            avg_attention=summary['avg_attention']
-        )
+        # break & sleep recommendations during session
+        if st.session_state.alert_manager.is_sleep_alarm_active():
+            break_advisor_placeholder.markdown(f"""
+            <div style="background-color: #FDE8E8; padding: 14px; border-radius: 10px; border: 2px solid #DC2626; color: #991B1B;">
+                <b style="font-size: 1.0rem;">🚨 SLEEP ALARM ACTIVE</b><br>
+                <span style="font-size: 0.9rem;">{st.session_state.sleep_tracker.trigger_reason}! Click 'Stop Alarm' above to dismiss.</span>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            break_rec = st.session_state.recommender.evaluate(
+                session_duration_sec=summary['session_duration_sec'],
+                total_yawns=total_yawns,
+                drowsy_episodes=st.session_state.blink_tracker.drowsy_episode_count,
+                low_attention_streak_sec=st.session_state.scorer.low_attention_streak_seconds,
+                current_attention=attention_score,
+                avg_attention=summary['avg_attention']
+            )
 
-        level_color = {
-            'CRITICAL': '#FDE8E8',
-            'WARNING': '#FEF08A',
-            'INFO': '#E1EFFE',
-            'GOOD': '#DEF7EC',
-            'NORMAL': '#F3F4F6'
-        }.get(break_rec['level'], '#F3F4F6')
+            level_color = {
+                'CRITICAL': '#FDE8E8',
+                'WARNING': '#FEF08A',
+                'INFO': '#E1EFFE',
+                'GOOD': '#DEF7EC',
+                'NORMAL': '#F3F4F6'
+            }.get(break_rec['level'], '#F3F4F6')
 
-        break_advisor_placeholder.markdown(f"""
-        <div style="background-color: {level_color}; padding: 14px; border-radius: 10px; border: 1px solid #CBD5E1; color: #1E293B; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
-            <b style="color: #0F172A; font-size: 0.95rem;">{break_rec['badge']}</b><br>
-            <span style="font-size: 0.9rem; color: #334155; line-height: 1.4;">{break_rec['message']}</span>
-        </div>
-        """, unsafe_allow_html=True)
+            sleep_guard_info = ""
+            if closed_dur > 1.0:
+                sleep_guard_info = f" | Eyes closed: {int(closed_dur)}s / {int(sleep_timeout)}s"
+            elif head_dur > 1.0:
+                sleep_guard_info = f" | Head down: {int(head_dur)}s / {int(sleep_timeout)}s"
+
+            break_advisor_placeholder.markdown(f"""
+            <div style="background-color: {level_color}; padding: 14px; border-radius: 10px; border: 1px solid #CBD5E1; color: #1E293B; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
+                <b style="color: #0F172A; font-size: 0.95rem;">{break_rec['badge']}{sleep_guard_info}</b><br>
+                <span style="font-size: 0.9rem; color: #334155; line-height: 1.4;">{break_rec['message']}</span>
+            </div>
+            """, unsafe_allow_html=True)
 
         time.sleep(0.03)
 
