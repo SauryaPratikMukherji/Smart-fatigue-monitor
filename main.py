@@ -4,14 +4,19 @@ import time
 import cv2
 import numpy as np
 
-from src.config import (
-    DEFAULT_EAR_THRESHOLD,
-    DEFAULT_EAR_FRAMES_DROWSY,
-    DEFAULT_MAR_THRESHOLD,
-    DEFAULT_MAR_FRAMES_YAWN,
-    HEAD_PITCH_DOWN_THRESHOLD,
-    DEFAULT_SLEEP_TIMEOUT_SECONDS
-)
+import src.config as cfg
+import importlib
+try:
+    importlib.reload(cfg)
+except Exception:
+    pass
+
+DEFAULT_EAR_THRESHOLD = getattr(cfg, 'DEFAULT_EAR_THRESHOLD', 0.22)
+DEFAULT_EAR_FRAMES_DROWSY = getattr(cfg, 'DEFAULT_EAR_FRAMES_DROWSY', 25)
+DEFAULT_MAR_THRESHOLD = getattr(cfg, 'DEFAULT_MAR_THRESHOLD', 0.58)
+DEFAULT_MAR_FRAMES_YAWN = getattr(cfg, 'DEFAULT_MAR_FRAMES_YAWN', 25)
+HEAD_PITCH_DOWN_THRESHOLD = getattr(cfg, 'HEAD_PITCH_DOWN_THRESHOLD', 18.0)
+DEFAULT_SLEEP_TIMEOUT_SECONDS = getattr(cfg, 'DEFAULT_SLEEP_TIMEOUT_SECONDS', 120)
 from src.face_mesh_detector import FaceMeshDetector
 from src.fatigue_metrics import (
     calculate_ear,
