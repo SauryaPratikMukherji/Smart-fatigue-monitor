@@ -7,12 +7,15 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-import src.config as cfg
+import sys
 import importlib
-try:
-    importlib.reload(cfg)
-except Exception:
-    pass
+
+# Clean reload of all local src modules to prevent Streamlit hot-reload cache errors
+for mod_name in list(sys.modules.keys()):
+    if mod_name.startswith('src.') or mod_name == 'src':
+        del sys.modules[mod_name]
+
+import src.config as cfg
 
 DEFAULT_EAR_THRESHOLD = getattr(cfg, 'DEFAULT_EAR_THRESHOLD', 0.22)
 DEFAULT_EAR_FRAMES_DROWSY = getattr(cfg, 'DEFAULT_EAR_FRAMES_DROWSY', 25)

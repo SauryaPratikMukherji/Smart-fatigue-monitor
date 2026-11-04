@@ -4,12 +4,13 @@ import time
 import cv2
 import numpy as np
 
-import src.config as cfg
 import importlib
-try:
-    importlib.reload(cfg)
-except Exception:
-    pass
+
+for mod_name in list(sys.modules.keys()):
+    if mod_name.startswith('src.') or mod_name == 'src':
+        del sys.modules[mod_name]
+
+import src.config as cfg
 
 DEFAULT_EAR_THRESHOLD = getattr(cfg, 'DEFAULT_EAR_THRESHOLD', 0.22)
 DEFAULT_EAR_FRAMES_DROWSY = getattr(cfg, 'DEFAULT_EAR_FRAMES_DROWSY', 25)
